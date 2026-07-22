@@ -32,13 +32,22 @@ func TestManifest(t *testing.T) {
 	}
 }
 
-func TestGetConfigSpecEmpty(t *testing.T) {
-	spec, err := (&Plugin{}).GetConfigSpec(context.Background())
+func TestGetConfigSpecReportsModelField(t *testing.T) {
+	plugin := &Plugin{}
+
+	spec, err := plugin.GetConfigSpec(context.Background())
 	if err != nil {
-		t.Fatalf("err: %v", err)
+		t.Fatal(err)
 	}
-	if len(spec.Fields) != 0 {
-		t.Fatalf("expected no fields, got %d", len(spec.Fields))
+	want := []ports.ConfigField{
+		{
+			Key:         "model",
+			Type:        ports.ConfigFieldString,
+			Description: "Model override passed to `kimi --model`.",
+		},
+	}
+	if !reflect.DeepEqual(spec.Fields, want) {
+		t.Fatalf("config fields\nwant: %#v\n got: %#v", want, spec.Fields)
 	}
 }
 
@@ -122,6 +131,38 @@ func TestGetLaunchCommandIgnoresSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestGetLaunchCommandAppendsConfiguredModel(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "kimi"}
+
+	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{Model: "  claude-sonnet-5  "},
+		Prompt: "fix this",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(cmd, []string{"--model", "claude-sonnet-5"}) {
+		t.Fatalf("command %#v missing trimmed --model flag", cmd)
+	}
+	if containsSubsequence(cmd, []string{"--model", "  claude-sonnet-5  "}) {
+		t.Fatalf("command %#v used untrimmed model", cmd)
+	}
+}
+
+func TestGetLaunchCommandOmitsBlankConfiguredModel(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "kimi"}
+
+	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{Model: " \t "},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(cmd, "--model") {
+		t.Fatalf("command %#v contains --model for blank model", cmd)
+	}
+}
+
 // Kimi docs: `--yolo` and `--auto` cannot be used together with `--continue`
 // or `--session` — resumed sessions inherit the approval settings of the
 // original session — so the restore path must not emit approval flags
@@ -189,6 +230,26 @@ func TestGetRestoreCommandNoID(t *testing.T) {
 				t.Fatalf("cmd = %#v, want nil", cmd)
 			}
 		})
+	}
+}
+
+func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "kimi"}
+
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Config: ports.AgentConfig{Model: "  claude-sonnet-5  "},
+		Session: ports.SessionRef{
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "01HZABC"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if !containsSubsequence(cmd, []string{"--model", "claude-sonnet-5"}) {
+		t.Fatalf("restore command %#v missing trimmed --model flag", cmd)
 	}
 }
 
@@ -588,4 +649,37 @@ func TestContextCancellation(t *testing.T) {
 	if _, err := ResolveKimiBinary(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ResolveKimiBinary err = %v, want context.Canceled", err)
 	}
+}
+
+func contains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSubsequence(values []string, needle []string) bool {
+	if len(needle) == 0 {
+		return true
+	}
+
+	for start := range values {
+		if start+len(needle) > len(values) {
+			return false
+		}
+		ok := true
+		for offset, want := range needle {
+			if values[start+offset] != want {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+
+	return false
 }
